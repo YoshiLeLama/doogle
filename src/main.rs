@@ -19,15 +19,46 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn chop(&mut self, n: usize) -> &'a [char] {
+        let token = &self.content[..n];
+        self.content = &self.content[n..];
+        token
+    }
+
+    fn chop_while<P>(&mut self, mut predicate: P) -> &'a [char] 
+        where P: FnMut(&char) -> bool
+    {
+        let mut n = 0;
+        while n < self.content.len() && predicate(&self.content[n]) {
+            n += 1;
+        }
+        
+        self.chop(n)
+    }
+
     fn next_token(&mut self) -> Option<String> {
-        todo!()
+        self.trim_left();
+
+        if self.content.is_empty() {
+            return None;
+        }
+
+        if self.content[0].is_numeric() {
+            return Some(self.chop_while(|x| x.is_numeric()).iter().collect());
+        }
+
+        if self.content[0].is_alphabetic() {
+            return Some(self.chop_while(|x| x.is_alphanumeric()).iter().collect());
+        }
+
+        Some(self.chop(1).iter().collect())
     }
 }
 
 fn main() -> io::Result<()> {
     let file_path = "docs.gl/gl4/glEnable.xhtml";
 
-    let file = File::open(&file_path)?;
+    let file = File::open(file_path)?;
     let file = BufReader::new(file);
 
     let mut content = String::new(); 
@@ -48,9 +79,12 @@ fn main() -> io::Result<()> {
 
     let content = content.chars().collect::<Vec<_>>();
 
-    let lexer = Lexer::new(&content);
+    let mut lexer = Lexer::new(&content);
 
-    println!("{content:?}", content = &lexer.content);
+    while let Some(token) = lexer.next_token() {
+        println!("token => {token}");
+    }
+
 
     Ok(())
 }
