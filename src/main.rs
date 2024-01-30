@@ -1,9 +1,17 @@
-use std::collections::HashMap;
-use std::fs::File;
+use std::collections::{HashMap, HashSet};
+use std::fs::{File, self};
 use std::io::{self, BufReader};
+use std::path::PathBuf;
+use std::process::exit;
 
 use xml::reader::XmlEvent;
 use xml::EventReader;
+
+type TermCount = HashMap<String, usize>;
+
+type TermFreq = HashMap<String, f64>;
+type TermFreqIndex = HashMap<PathBuf, TermFreq>;
+type InvDocFreq = HashMap<String, f64>;
 
 struct Lexer<'a> {
     content: &'a [char]
@@ -57,43 +65,113 @@ impl<'a> Lexer<'a> {
 }
 
 fn main() -> io::Result<()> {
-    let file_path = "docs.gl/gl4/glEnable.xhtml";
+    let dir_path = "docs.gl/gl4";
+    let dir = fs::read_dir(&dir_path)?;
 
-    let file = File::open(file_path)?;
-    let file = BufReader::new(file);
+    let mut tfi = TermFreqIndex::new();
 
-    let mut content = String::new(); 
+    for file in dir {
+        let file = file?;
+        let file_path = file.path();
 
-    let parser = EventReader::new(file);
-    for e in parser {
-        match e {
-            Ok(XmlEvent::Characters(chars)) => {
-                content.push_str(&chars);
-                content.push(' ');
+        let file = File::open(&file_path)?;
+        let file = BufReader::new(file);
+
+        let mut content = String::new(); 
+
+        let parser = EventReader::new(file);
+        for e in parser {
+            match e {
+                Ok(XmlEvent::Characters(chars)) => {
+                    content.push_str(&chars);
+                    content.push(' ');
+                }
+                Err(e) => {
+                    println!("ERROR while parsing XML : {e}");
+                }
+                _ => {}
             }
-            Err(e) => {
-                println!("ERROR while parsing XML : {e}");
+        }
+
+        let content = content.chars().collect::<Vec<_>>();
+
+        let mut lexer = Lexer::new(&content);
+        let mut terms_count = 0;
+        let mut tc = TermCount::new();
+
+        while let Some(token) = lexer.next_token() {
+            let term = token.to_uppercase();
+            if let Some(count) = tc.get_mut(&term) {
+                *count += 1;
+            } else {
+                tc.insert(term, 1);
             }
-            _ => {}
+            terms_count += 1;
+        }
+
+        let mut tf = TermFreq::new();
+
+        assert!(terms_count != 0);
+
+        for (term, count) in tc {
+            tf.insert(term.to_string(), count as f64 / terms_count as f64);
+        }
+
+        tfi.insert(file_path, tf);
+    }
+
+    let mut idf = InvDocFreq::new();
+
+    let docs_count = tfi.len();
+
+    for tf in tfi.values() {
+        for term in tf.keys() {
+            if !idf.contains_key(term) {
+                let mut term_appearences = 0;
+                for tf in tfi.values() {
+                    if tf.contains_key(term) {
+                        term_appearences += 1;
+                    }
+                }
+
+                idf.insert(term.to_string(), (docs_count as f64 / term_appearences as f64).log2());
+            }
         }
     }
 
-    let content = content.chars().collect::<Vec<_>>();
+    let mut results = Vec::<(PathBuf, f64)>::new();
 
-    let mut lexer = Lexer::new(&content);
+    let mut request = String::new();
+    std::io::stdin().read_line(&mut request).unwrap();
+    let request = request.trim_end();
 
-    let mut tf = HashMap::<String, usize>::new();
+    println!("Results for {request}");
 
-    while let Some(token) = lexer.next_token() {
-        let term = token.to_uppercase();
-        if let Some(count) = tf.get_mut(&term) {
-            *count += 1;
-        } else {
-            tf.insert(term, 1);
-        }
+    let request = request.to_uppercase();
+    let idf_test = match idf.get(&request) {
+        Some(idf_value) => idf_value,
+        None => &0.,
+    };
+
+    for (path,tf) in tfi {
+        let tf_test = match tf.get(&request) {
+            Some(tf_value) => tf_value,
+            None => &0.,
+        };
+        let tfidf = tf_test * idf_test;
+        results.push((path, tfidf));
     }
 
-    println!("{tf:?}");
+    results.sort_by(|(_,v1), (_,v2)| v1.partial_cmp(v2).unwrap());
+    results.reverse();
+
+    for (path, tfidf) in results.iter().take(10) {
+        if tfidf == &0. {
+            break;
+        }
+         
+        println!("{:?} {}", path, tfidf);
+    }
 
     Ok(())
 }
