@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader};
 
@@ -81,10 +82,18 @@ fn main() -> io::Result<()> {
 
     let mut lexer = Lexer::new(&content);
 
+    let mut tf = HashMap::<String, usize>::new();
+
     while let Some(token) = lexer.next_token() {
-        println!("token => {token}");
+        let term = token.to_uppercase();
+        if let Some(count) = tf.get_mut(&term) {
+            *count += 1;
+        } else {
+            tf.insert(term, 1);
+        }
     }
 
+    println!("{tf:?}");
 
     Ok(())
 }
