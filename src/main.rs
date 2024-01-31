@@ -101,17 +101,17 @@ impl Model {
 
         for term in request {
             let term = Model::clean_term(term);
-            
-            let idf_test = self.get_idf(&term);
+           
+            let idf_value = self.get_idf(&term);
 
             for path in self.tfi.keys() {
-                let tf_test = self.get_tf_doc(path, &term);
+                let tf_value = self.get_tf_doc(path, &term);
 
-                let tfidf = tf_test * idf_test;
+                let tfidf_value = tf_value * idf_value;
 
                 match results.get_mut(path) {
-                    Some(v) => { *v += tfidf; }
-                    None => { results.insert(path.to_path_buf(), tfidf); }
+                    Some(v) => { *v += tfidf_value; }
+                    None => { results.insert(path.to_path_buf(), tfidf_value); }
                 }
             }
         }
