@@ -1,8 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, self};
 use std::io::{self, BufReader};
 use std::path::PathBuf;
-use std::process::exit;
 
 use xml::reader::XmlEvent;
 use xml::EventReader;
@@ -61,6 +60,63 @@ impl<'a> Lexer<'a> {
         }
 
         Some(self.chop(1).iter().collect())
+    }
+}
+
+struct Model {
+    tfi: TermFreqIndex,
+    idf: InvDocFreq,
+}
+
+impl Model {
+    fn new(tfi: TermFreqIndex, idf: InvDocFreq) -> Self {
+        Self { tfi, idf }
+    }
+
+    fn clean_term(term: &str) -> String {
+        term.to_uppercase()
+    }
+
+    fn get_idf(&self, term: &str) -> f64 {
+        match self.idf.get(term) {
+            Some(&v) => v,
+            None => 0.
+        }
+    }
+
+    fn get_tf_doc(&self, doc_path: &PathBuf, term: &str) -> f64 {
+        match self.tfi.get(doc_path) {
+            Some(tf) => match tf.get(term) {
+                Some(&v) => v,
+                None => 0.
+            }
+            None => 0.
+        }
+    }
+
+    fn process_request(&self, request: &str) -> HashMap<PathBuf, f64> {
+        let request = request.split_whitespace().collect::<Vec<_>>();
+
+        let mut results = HashMap::<PathBuf, f64>::new();
+
+        for term in request {
+            let term = Model::clean_term(term);
+            
+            let idf_test = self.get_idf(&term);
+
+            for path in self.tfi.keys() {
+                let tf_test = self.get_tf_doc(path, &term);
+
+                let tfidf = tf_test * idf_test;
+
+                match results.get_mut(path) {
+                    Some(v) => { *v += tfidf; }
+                    None => { results.insert(path.to_path_buf(), tfidf); }
+                }
+            }
+        }
+
+        results
     }
 }
 
@@ -139,7 +195,7 @@ fn main() -> io::Result<()> {
         }
     }
 
-    let mut results = Vec::<(PathBuf, f64)>::new();
+    let model = Model::new(tfi, idf);
 
     let mut request = String::new();
     std::io::stdin().read_line(&mut request).unwrap();
@@ -147,26 +203,12 @@ fn main() -> io::Result<()> {
 
     println!("Results for {request}");
 
-    let request = request.to_uppercase();
-    let idf_test = match idf.get(&request) {
-        Some(idf_value) => idf_value,
-        None => &0.,
-    };
+    let results = model.process_request(request);
+    let mut results = results.iter().collect::<Vec<_>>();
+    results.sort_by(|(_,v1),(_,v2)| v2.partial_cmp(v1).unwrap());
 
-    for (path,tf) in tfi {
-        let tf_test = match tf.get(&request) {
-            Some(tf_value) => tf_value,
-            None => &0.,
-        };
-        let tfidf = tf_test * idf_test;
-        results.push((path, tfidf));
-    }
-
-    results.sort_by(|(_,v1), (_,v2)| v1.partial_cmp(v2).unwrap());
-    results.reverse();
-
-    for (path, tfidf) in results.iter().take(10) {
-        if tfidf == &0. {
+    for (path, &tfidf) in results.iter().take(10) {
+        if tfidf == 0. {
             break;
         }
          
