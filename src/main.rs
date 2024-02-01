@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use xml::reader::XmlEvent;
 use xml::EventReader;
+
+use serde::{Deserialize, Serialize};
 
 type TermFreq = HashMap<String, usize>;
 type TermFreqIndex = HashMap<PathBuf, (usize, TermFreq)>;
@@ -95,6 +97,7 @@ fn parse_xml_file(path: &PathBuf) -> Result<Vec<char>, ()> {
     Ok(content.chars().collect::<Vec<_>>())
 }
 
+#[derive(Deserialize, Serialize)]
 struct Model {
     tfi: TermFreqIndex,
     idf: InvDocFreq,
@@ -108,6 +111,20 @@ impl Model {
             idf: InvDocFreq::new(),
             num_docs: 0,
         }
+    }
+
+    fn save_to_file(&self, file_name: &str) {
+        let mut file = File::create(file_name).unwrap();
+
+        let save_content = serde_json::to_string(self).unwrap();
+
+        file.write(save_content.as_bytes()).unwrap();
+    }
+
+    fn load_from_file(file_name: &str) -> Self {
+        let save_content = fs::read_to_string(file_name).unwrap();
+        let model: Self = serde_json::from_str(&save_content).unwrap();
+        model
     }
 
     fn add_dir(&mut self, dir_path: &PathBuf) -> Result<(), ()> {
@@ -236,8 +253,15 @@ impl Model {
 }
 
 fn main() -> Result<(), ()> {
-    let mut model = Model::new();
-    model.add_dir(&PathBuf::from("docs.gl"))?;
+    let save_file_name = "index.json";
+    let mut model;
+
+    if Path::new(save_file_name).exists() {
+        model = Model::load_from_file(save_file_name)
+    } else {
+        model = Model::new();
+        model.add_dir(&PathBuf::from("docs.gl"))?;
+    }
 
     let mut request = String::new();
     print!("> ");
@@ -263,6 +287,8 @@ fn main() -> Result<(), ()> {
          
         println!("{:?} {}", path, tfidf);
     }
+
+    model.save_to_file(save_file_name);
 
     Ok(())
 }
