@@ -279,17 +279,16 @@ fn main() -> Result<(), ()> {
     let save_file_name = "index.json";
     let mut model;
 
+    let loading_start = Instant::now();
     if Path::new(save_file_name).exists() {
         println!("Loading the model from {save_file_name}...");
-        let loading_start = Instant::now();
         model = Model::load_from_file(save_file_name);
         println!("Took {elapsed:.2}s to load the model!", elapsed = loading_start.elapsed().as_secs_f32());
     } else {
         println!("Creating the model...");
-        let creation_start = Instant::now();
         model = Model::new();
         model.add_dir(&PathBuf::from("docs.gl"))?;
-        println!("Took {elapsed:.2}s to create the model!", elapsed = creation_start.elapsed().as_secs_f32());
+        println!("Took {elapsed:.2}s to create the model!", elapsed = loading_start.elapsed().as_secs_f32());
     }
 
     println!("Search among {length} files!", length = model.tfi.len());
