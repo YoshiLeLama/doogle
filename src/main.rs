@@ -2,14 +2,22 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use xml::reader::XmlEvent;
 use xml::EventReader;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Deserialize, Serialize)]
+struct Document {
+    terms_count: usize,
+    last_modified: SystemTime,
+    tf: TermFreq,
+}
+
 type TermFreq = HashMap<String, usize>;
-type TermFreqIndex = HashMap<PathBuf, (usize, TermFreq)>;
+type TermFreqIndex = HashMap<PathBuf, Document>;
 type InvDocFreq = HashMap<String, usize>;
 
 struct Lexer<'a> {
@@ -87,7 +95,7 @@ fn parse_xml_file(path: &PathBuf) -> Result<Vec<char>, ()> {
                 content.push(' ');
             }
             Err(e) => {
-                eprintln!("ERROR while parsing XML : {e}");
+                eprintln!("ERROR parsing XML : {e}");
                 return Err(());
             }
             _ => {}
@@ -132,9 +140,9 @@ impl Model {
         let dir = fs::read_dir(dir_path).map_err(|err| eprintln!("{err}"))?;
 
         'files_iter: for file in dir {
-            let file = file.map_err(|err| eprintln!("{err}"))?;
+            let file = file.map_err(|err| eprintln!("ERROR file is incorrect : {err}"))?;
             let file_path = file.path();
-            let file_type = file.file_type().map_err(|err| eprintln!("{err}"))?;
+            let file_type = file.file_type().map_err(|err| eprintln!("ERROR when querying file type : {err}"))?;
 
             if file_type.is_dir() {
                 self.add_dir(&file_path)?;
@@ -142,13 +150,17 @@ impl Model {
             }
 
             let file_ext = file_path.extension().and_then(std::ffi::OsStr::to_str);
+            let last_modified = file.metadata().map_err(|err| eprintln!("ERROR when querying metadata : {err}"))?
+                .modified().map_err(|err| eprintln!("ERROR when querying last modified time : {err}"))?;
+
+            println!("  modified on {last_modified:?}");
 
             if let Some(ext) = file_ext {
                 let content = match ext {
                     "xhtml" => parse_xml_file(&file_path)?,
                     _ => { println!("Skipping file {file_path:?}"); continue 'files_iter; } // Skipping all files that we cannot parse yet
                 };
-                self.add_doc(file_path, &content);
+                self.add_doc(file_path, &content, last_modified);
             } else {
                 println!("Unknown file : {file_path:?}");
             }
@@ -157,7 +169,7 @@ impl Model {
         Ok(())
     }
 
-    fn add_doc(&mut self, doc_path: PathBuf, content: &[char]) {
+    fn add_doc(&mut self, doc_path: PathBuf, content: &[char], last_modified: SystemTime) {
         println!("Indexing document : {doc_path:?}");
 
         let mut lexer = Lexer::new(content);
@@ -186,7 +198,7 @@ impl Model {
             }
         }
 
-        self.tfi.insert(doc_path, (terms_count, tf));
+        self.tfi.insert(doc_path, Document { terms_count , last_modified , tf });
         self.num_docs += 1;
     }
 
@@ -207,9 +219,9 @@ impl Model {
 
     fn get_tf_doc(&self, doc_path: &PathBuf, term: &str) -> f32 {
         match self.tfi.get(doc_path) {
-            Some((terms_count, tf)) if *terms_count > 0 => match tf.get(term) {
+            Some(doc) if doc.terms_count > 0 => match doc.tf.get(term) {
                 Some(&v) => {
-                    let terms_count = *terms_count as f32;
+                    let terms_count = doc.terms_count as f32;
                     let v = v as f32;
                     v / terms_count
                 },
@@ -257,6 +269,7 @@ fn main() -> Result<(), ()> {
     let mut model;
 
     if Path::new(save_file_name).exists() {
+        println!("Loading {save_file_name}...");
         model = Model::load_from_file(save_file_name)
     } else {
         model = Model::new();
