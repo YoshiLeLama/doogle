@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Write, BufWriter};
 use std::path::{Path, PathBuf};
@@ -107,6 +107,7 @@ fn parse_xml_file(path: &PathBuf) -> Result<Vec<char>, ()> {
 
 #[derive(Deserialize, Serialize)]
 struct Model {
+    dirs: HashSet<PathBuf>,
     tfi: TermFreqIndex,
     idf: InvDocFreq,
     num_docs: usize,
@@ -114,7 +115,8 @@ struct Model {
 
 impl Model {
     fn new() -> Self {
-        Self { 
+        Self {
+            dirs: HashSet::new(),
             tfi: TermFreqIndex::new(),
             idf: InvDocFreq::new(),
             num_docs: 0,
@@ -122,19 +124,56 @@ impl Model {
     }
 
     fn save_to_file(&self, file_name: &str) {
+        println!("Saving model to {file_name}...");
         let file = File::create(file_name).unwrap();
         serde_json::to_writer(BufWriter::new(file), self).unwrap();
+        println!("Done saving.")
     }
 
     fn load_from_file(file_name: &str) -> Self {
+        println!("Loading the model from {file_name}...");
         let file = File::open(file_name).unwrap();
-        let model: Self = serde_json::from_reader(BufReader::new(file)).unwrap();
+        let mut model: Self = serde_json::from_reader(BufReader::new(file)).unwrap();
+
+        let mut invalid_paths: Vec<PathBuf> = Vec::new();
+        let mut updated_paths: Vec<(SystemTime, PathBuf)> = Vec::new();
+        
+        for (file_path, doc) in &model.tfi {
+            match fs::metadata(&file_path) {
+                Ok(metadata) => {
+                    let last_modified = metadata.modified().unwrap(); 
+                    if last_modified != doc.last_modified {
+                        updated_paths.push((last_modified, file_path.to_path_buf())); 
+                    }
+                }
+                Err(_) => { invalid_paths.push(file_path.to_path_buf()) }
+            }
+        }
+
+        for doc_path in invalid_paths {
+            println!("Invalidating {doc_path:?}...");
+            model.remove_doc(&doc_path);
+        }
+
+        'update_iter: for (last_modified, doc_path) in updated_paths {
+            println!("Updating {doc_path:?}...");
+            let content = match parse_xml_file(&doc_path) {
+                Ok(tokens) => tokens,
+                Err(_) => { eprintln!("ERROR while parsing xml document"); continue 'update_iter; }
+            };
+            model.add_doc(doc_path, &content, last_modified);
+        }
+
+        println!("Done loading model.");
+
         model
     }
 
     fn add_dir(&mut self, dir_path: &PathBuf) -> Result<(), ()> {
         println!("Indexing directory : {dir_path:?}");
         let dir = fs::read_dir(dir_path).map_err(|err| eprintln!("{err}"))?;
+
+        self.dirs.insert(dir_path.to_path_buf());
 
         'files_iter: for file in dir {
             let file = file.map_err(|err| eprintln!("ERROR file is incorrect : {err}"))?;
@@ -242,7 +281,7 @@ impl Model {
         }
     }
 
-    fn process_request(&self, request: &str) -> HashMap<PathBuf, f32> {
+    fn process_query(&self, request: &str) -> HashMap<PathBuf, f32> {
         let request = request.split_whitespace().collect::<Vec<_>>();
 
         let mut results = HashMap::<PathBuf, f32>::new();
@@ -275,13 +314,20 @@ impl Model {
     }
 }
 
+fn prompt_request() -> Result<String, ()> {
+    let mut request = String::new();
+    print!("> ");
+    std::io::stdout().flush().map_err(|err| eprintln!("ERROR when flushing stdout : {err}"))?;
+    std::io::stdin().read_line(&mut request).unwrap();
+    Ok(request.trim_end().to_string())
+}
+
 fn main() -> Result<(), ()> {
     let save_file_name = "index.json";
     let mut model;
 
     let loading_start = Instant::now();
     if Path::new(save_file_name).exists() {
-        println!("Loading the model from {save_file_name}...");
         model = Model::load_from_file(save_file_name);
         println!("Took {elapsed:.2}s to load the model!", elapsed = loading_start.elapsed().as_secs_f32());
     } else {
@@ -293,31 +339,31 @@ fn main() -> Result<(), ()> {
 
     println!("Search among {length} files!", length = model.tfi.len());
 
-    let mut request = String::new();
-    print!("> ");
-    std::io::stdout().flush().map_err(|err| eprintln!("ERROR when flushing stdout : {err}"))?;
-    std::io::stdin().read_line(&mut request).unwrap();
-    let request = request.trim_end();
+    'request_loop: loop {
+        let res_compute_start = Instant::now();
 
-    let res_compute_start = Instant::now();
+        let request = match prompt_request() {
+            Ok(v) if v != ":quit" => v,
+            _ => break 'request_loop,
+        };
 
-    let results = model.process_request(request);
-    let mut results = results.iter().collect::<Vec<_>>();
-    results.sort_by(|(_,v1),(_,v2)| v2.partial_cmp(v1).unwrap());
-    
-    if results.is_empty() {
-        println!("No result for {request}");
-        return Ok(());
-    }
+        let results = model.process_query(&request);
+        let mut results = results.iter().collect::<Vec<_>>();
+        results.sort_by(|(_,v1),(_,v2)| v2.partial_cmp(v1).unwrap());
+        
+        if results.is_empty() {
+            println!("No result for {request}");
+        } else {
+            println!("Results for {request} (retrieved in {elapsed:.2}s)", elapsed = res_compute_start.elapsed().as_secs_f32());
 
-    println!("Results for {request} (retrieved in {elapsed:.2}s)", elapsed = res_compute_start.elapsed().as_secs_f32());
-
-    for (path, &tfidf) in results.iter().take(10) {
-        if tfidf == 0. {
-            break;
+            'result_display: for (path, &tfidf) in results.iter().take(20) {
+                if tfidf == 0. {
+                    break 'result_display;
+                }
+                 
+                println!("{:?} {}", path, tfidf);
+            }
         }
-         
-        println!("{:?} {}", path, tfidf);
     }
 
     model.save_to_file(save_file_name);
