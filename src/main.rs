@@ -167,6 +167,8 @@ impl Model {
     }
 
     fn add_doc(&mut self, doc_path: PathBuf, content: &[char], last_modified: SystemTime) {
+        self.remove_doc(&doc_path);
+
         println!("Indexing document : {doc_path:?}");
 
         let mut lexer = Lexer::new(content);
@@ -199,6 +201,18 @@ impl Model {
         self.num_docs += 1;
     }
 
+    fn remove_doc(&mut self, doc_path: &PathBuf) {
+        if let Some(doc) = self.tfi.remove(doc_path) {
+            self.num_docs -= 1;
+
+            for term in doc.tf.keys() {
+                if let Some(count) = self.idf.get_mut(term) {
+                    *count -= 1;
+                } 
+            }
+        }
+    }
+
     fn clean_term(term: &str) -> String {
         term.to_uppercase()
     }
@@ -208,7 +222,7 @@ impl Model {
             Some(&v) if v > 0 => {
                 let n = self.num_docs as f32;
                 let v = v as f32;
-                n / v
+                (n / v).log10()
             },
             _ => 0.
         }
