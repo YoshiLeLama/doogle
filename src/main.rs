@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Write, BufWriter};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{SystemTime, Instant};
 
 use xml::reader::XmlEvent;
 use xml::EventReader;
@@ -87,7 +87,7 @@ fn parse_xml_file(path: &PathBuf) -> Result<Vec<char>, ()> {
 
     let mut content = String::new(); 
 
-    let parser = EventReader::new(file);
+    let parser = EventReader::new(BufReader::new(file));
     for e in parser {
         match e {
             Ok(XmlEvent::Characters(chars)) => {
@@ -122,16 +122,13 @@ impl Model {
     }
 
     fn save_to_file(&self, file_name: &str) {
-        let mut file = File::create(file_name).unwrap();
-
-        let save_content = serde_json::to_string(self).unwrap();
-
-        file.write(save_content.as_bytes()).unwrap();
+        let file = File::create(file_name).unwrap();
+        serde_json::to_writer(BufWriter::new(file), self).unwrap();
     }
 
     fn load_from_file(file_name: &str) -> Self {
-        let save_content = fs::read_to_string(file_name).unwrap();
-        let model: Self = serde_json::from_str(&save_content).unwrap();
+        let file = File::open(file_name).unwrap();
+        let model: Self = serde_json::from_reader(BufReader::new(file)).unwrap();
         model
     }
 
@@ -269,18 +266,27 @@ fn main() -> Result<(), ()> {
     let mut model;
 
     if Path::new(save_file_name).exists() {
-        println!("Loading {save_file_name}...");
-        model = Model::load_from_file(save_file_name)
+        println!("Loading the model from {save_file_name}...");
+        let loading_start = Instant::now();
+        model = Model::load_from_file(save_file_name);
+        println!("Took {elapsed:.2}s to load the model!", elapsed = loading_start.elapsed().as_secs_f32());
     } else {
+        println!("Creating the model...");
+        let creation_start = Instant::now();
         model = Model::new();
         model.add_dir(&PathBuf::from("docs.gl"))?;
+        println!("Took {elapsed:.2}s to create the model!", elapsed = creation_start.elapsed().as_secs_f32());
     }
+
+    println!("Search among {length} files!", length = model.tfi.len());
 
     let mut request = String::new();
     print!("> ");
     std::io::stdout().flush().map_err(|err| eprintln!("ERROR when flushing stdout : {err}"))?;
     std::io::stdin().read_line(&mut request).unwrap();
     let request = request.trim_end();
+
+    let res_compute_start = Instant::now();
 
     let results = model.process_request(request);
     let mut results = results.iter().collect::<Vec<_>>();
@@ -291,7 +297,7 @@ fn main() -> Result<(), ()> {
         return Ok(());
     }
 
-    println!("Results for {request}");
+    println!("Results for {request} (retrieved in {elapsed:.2}s)", elapsed = res_compute_start.elapsed().as_secs_f32());
 
     for (path, &tfidf) in results.iter().take(10) {
         if tfidf == 0. {
