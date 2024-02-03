@@ -4,6 +4,7 @@ mod parser;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 fn prompt_request() -> Result<String, ()> {
@@ -29,19 +30,21 @@ fn main() -> Result<(), ()> {
         println!("Took {elapsed:.2}s to create the model!", elapsed = loading_start.elapsed().as_secs_f32());
     }
 
+    let model = Arc::new(model);
+
     println!("Search among {length} files!", length = model.corpus_size());
 
     println!("(type :quit when you're done)");
 
     'request_loop: loop {
-        let res_compute_start = Instant::now();
-
         let request = match prompt_request() {
             Ok(v) if v != ":quit" => v,
             _ => break 'request_loop,
         };
 
-        let results = model.process_query(&request);
+        let res_compute_start = Instant::now();
+
+        let results = model::process_query(model.clone(), &request, 4);
         let mut results = results.iter().collect::<Vec<_>>();
         results.sort_by(|(_,v1),(_,v2)| v2.partial_cmp(v1).unwrap());
         

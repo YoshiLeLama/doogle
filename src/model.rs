@@ -2,6 +2,8 @@ use std::collections::{HashSet, HashMap};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::thread;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -9,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::parser;
 use crate::lexer;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Document {
     terms_count: usize,
     last_modified: SystemTime,
@@ -20,7 +22,9 @@ type TermFreq = HashMap<String, usize>;
 type TermFreqIndex = HashMap<PathBuf, Document>;
 type InvDocFreq = HashMap<String, usize>;
 
-#[derive(Deserialize, Serialize)]
+type QueryResult = HashMap::<PathBuf, f32>;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Model {
     dirs: HashSet<PathBuf>,
     tfi: TermFreqIndex,
@@ -198,32 +202,28 @@ impl Model {
         }
     }
 
-    pub fn process_query(&self, request: &str) -> HashMap<PathBuf, f32> {
-        let request = request.split_whitespace().collect::<Vec<_>>();
-
-        let mut results = HashMap::<PathBuf, f32>::new();
-
-        'idf_iter: for term in request {
-            let term = Model::clean_term(term);
+    fn process_query_term(&self, term: &str) -> QueryResult {
+        let term = Model::clean_term(term);
            
-            let idf_value = self.get_idf(&term);
-            if idf_value == 0. {
-                continue 'idf_iter; // Skipping all calculations if term isn't in the corpus
+        let idf_value = self.get_idf(&term);
+        if idf_value == 0. {
+            return QueryResult::new();
+        }
+
+        let mut results = QueryResult::new();
+
+        for path in self.tfi.keys() {
+            let tf_value = self.get_tf_doc(path, &term);
+            if tf_value == 0. {
+                // Skip to the next document if term isn't in the current one
+                continue; 
             }
 
-            'tf_iter: for path in self.tfi.keys() {
-                let tf_value = self.get_tf_doc(path, &term);
-                if tf_value == 0. {
-                    // Skip to the next document if term isn't in the current one
-                    continue 'tf_iter; 
-                }
+            let tfidf_value = tf_value * idf_value;
 
-                let tfidf_value = tf_value * idf_value;
-
-                match results.get_mut(path) {
-                    Some(v) => { *v += tfidf_value; }
-                    None => { results.insert(path.to_path_buf(), tfidf_value); }
-                }
+            match results.get_mut(path) {
+                Some(v) => { *v += tfidf_value; }
+                None => { results.insert(path.to_path_buf(), tfidf_value); }
             }
         }
 
@@ -231,3 +231,72 @@ impl Model {
     }
 }
 
+fn combine_results(results: &mut QueryResult, result: QueryResult) {
+    for (doc, tfidf) in result {
+        match results.get_mut(&doc) {
+            Some(curr_tfidf) =>  { *curr_tfidf += tfidf; }
+            None => { results.insert(doc.clone(), tfidf); }
+        }
+    }
+}
+
+// Returns a Vec containing (start of task, charge of task)
+fn dispatch_tasks(threads_count: usize, tasks: usize) -> Vec<(usize, usize)> {
+    // Make sure threads_count is greater than 0 (otherwise no thread would be created)
+    // and smaller than the number of terms in the query (otherwise useless threads would be
+    // created)
+    let threads_count = threads_count.max(1).min(tasks);
+
+    let threads_min_charge = tasks / threads_count;
+    let overcharged_threads = tasks % threads_count;
+
+    let mut dispatched = Vec::new();
+
+    for i in 0..threads_count {
+        let start = i.min(overcharged_threads) * (threads_min_charge + 1) + 
+                    if i > overcharged_threads { i - overcharged_threads } else { 0 } * threads_min_charge;
+
+        let thread_charge = if i < overcharged_threads {
+            threads_min_charge + 1
+        } else {
+            threads_min_charge
+        };
+
+        dispatched.push((start, thread_charge));
+    }
+
+    dispatched
+}
+
+pub fn process_query(model: Arc<Model>, request: &str, threads_count: usize) -> HashMap<PathBuf, f32> {
+    let request = request.split_whitespace().collect::<Vec<_>>();
+
+    let mut results = QueryResult::new();
+    let mut result_threads = Vec::new();
+    let dispatched = dispatch_tasks(threads_count, request.len());
+
+    for (start, thread_charge) in dispatched {
+        let model_ref = model.clone();
+        let terms = request[start..].iter().take(thread_charge).map(|&s| String::from(s)).collect::<Vec<_>>();
+        result_threads.push(thread::spawn(move || {
+            let mut results = QueryResult::new();
+            for term in terms {
+                combine_results(&mut results, model_ref.process_query_term(&term));
+            }
+            results
+        }));
+    }
+
+    let mut i = request.len();
+    while let Some(result_thread) = result_threads.pop() {
+        i -= 1;
+        match result_thread.join() {
+            Ok(result) => {
+                combine_results(&mut results, result);
+            }
+            Err(_) => eprintln!("Something went wrong when joining thread {i}"),
+        }
+    }
+
+    results
+}
