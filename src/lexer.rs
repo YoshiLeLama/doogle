@@ -1,10 +1,10 @@
 pub struct Lexer<'a> {
-    content: &'a [char]
+    content: &'a [char],
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(content: &'a [char]) -> Self {
-        Self {content}
+        Self { content }
     }
 
     fn trim_left(&mut self) {
@@ -19,14 +19,15 @@ impl<'a> Lexer<'a> {
         token
     }
 
-    fn chop_while<P>(&mut self, mut predicate: P) -> &'a [char] 
-        where P: FnMut(&char) -> bool
+    fn chop_while<P>(&mut self, mut predicate: P) -> &'a [char]
+    where
+        P: FnMut(&char) -> bool,
     {
         let mut n = 0;
         while n < self.content.len() && predicate(&self.content[n]) {
             n += 1;
         }
-        
+
         self.chop(n)
     }
 

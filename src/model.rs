@@ -1,4 +1,4 @@
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
@@ -8,8 +8,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::parser;
 use crate::lexer;
+use crate::parser;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Document {
@@ -22,7 +22,7 @@ type TermFreq = HashMap<String, usize>;
 type TermFreqIndex = HashMap<PathBuf, Document>;
 type InvDocFreq = HashMap<String, usize>;
 
-type QueryResult = HashMap::<PathBuf, f32>;
+type QueryResult = HashMap<PathBuf, f32>;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Model {
@@ -60,16 +60,16 @@ impl Model {
 
         let mut invalid_paths: Vec<PathBuf> = Vec::new();
         let mut updated_paths: Vec<(SystemTime, PathBuf)> = Vec::new();
-        
+
         for (file_path, doc) in &model.tfi {
             match fs::metadata(&file_path) {
                 Ok(metadata) => {
-                    let last_modified = metadata.modified().unwrap(); 
+                    let last_modified = metadata.modified().unwrap();
                     if last_modified != doc.last_modified {
-                        updated_paths.push((last_modified, file_path.to_path_buf())); 
+                        updated_paths.push((last_modified, file_path.to_path_buf()));
                     }
                 }
-                Err(_) => { invalid_paths.push(file_path.to_path_buf()) }
+                Err(_) => invalid_paths.push(file_path.to_path_buf()),
             }
         }
 
@@ -82,7 +82,10 @@ impl Model {
             println!("Updating {doc_path:?}...");
             let content = match parser::parse_xml_file(&doc_path) {
                 Ok(tokens) => tokens,
-                Err(_) => { eprintln!("ERROR while parsing xml document"); continue 'update_iter; }
+                Err(_) => {
+                    eprintln!("ERROR while parsing xml document");
+                    continue 'update_iter;
+                }
             };
             model.add_doc(doc_path, &content, last_modified);
         }
@@ -101,7 +104,9 @@ impl Model {
         'files_iter: for file in dir {
             let file = file.map_err(|err| eprintln!("ERROR file is incorrect : {err}"))?;
             let file_path = file.path();
-            let file_type = file.file_type().map_err(|err| eprintln!("ERROR when querying file type : {err}"))?;
+            let file_type = file
+                .file_type()
+                .map_err(|err| eprintln!("ERROR when querying file type : {err}"))?;
 
             if file_type.is_dir() {
                 self.add_dir(&file_path)?;
@@ -109,13 +114,19 @@ impl Model {
             }
 
             let file_ext = file_path.extension().and_then(std::ffi::OsStr::to_str);
-            let last_modified = file.metadata().map_err(|err| eprintln!("ERROR when querying metadata : {err}"))?
-                .modified().map_err(|err| eprintln!("ERROR when querying last modified time : {err}"))?;
+            let last_modified = file
+                .metadata()
+                .map_err(|err| eprintln!("ERROR when querying metadata : {err}"))?
+                .modified()
+                .map_err(|err| eprintln!("ERROR when querying last modified time : {err}"))?;
 
             if let Some(ext) = file_ext {
                 let content = match ext {
                     "xhtml" => parser::parse_xml_file(&file_path)?,
-                    _ => { println!("Skipping file {file_path:?}"); continue 'files_iter; } // Skipping all files that we cannot parse yet
+                    _ => {
+                        println!("Skipping file {file_path:?}");
+                        continue 'files_iter;
+                    } // Skipping all files that we cannot parse yet
                 };
                 self.add_doc(file_path, &content, last_modified);
             } else {
@@ -157,7 +168,14 @@ impl Model {
             }
         }
 
-        self.tfi.insert(doc_path, Document { terms_count , last_modified , tf });
+        self.tfi.insert(
+            doc_path,
+            Document {
+                terms_count,
+                last_modified,
+                tf,
+            },
+        );
         self.num_docs += 1;
     }
 
@@ -168,7 +186,7 @@ impl Model {
             for term in doc.tf.keys() {
                 if let Some(count) = self.idf.get_mut(term) {
                     *count -= 1;
-                } 
+                }
             }
         }
     }
@@ -183,8 +201,8 @@ impl Model {
                 let n = self.num_docs as f32;
                 let v = v as f32;
                 (n / v).log10()
-            },
-            _ => 0.
+            }
+            _ => 0.,
         }
     }
 
@@ -195,16 +213,16 @@ impl Model {
                     let terms_count = doc.terms_count as f32;
                     let v = v as f32;
                     v / terms_count
-                },
-                None => 0.
-            }
-            _ => 0.
+                }
+                None => 0.,
+            },
+            _ => 0.,
         }
     }
 
     fn process_query_term(&self, term: &str) -> QueryResult {
         let term = Model::clean_term(term);
-           
+
         let idf_value = self.get_idf(&term);
         if idf_value == 0. {
             return QueryResult::new();
@@ -216,14 +234,18 @@ impl Model {
             let tf_value = self.get_tf_doc(path, &term);
             if tf_value == 0. {
                 // Skip to the next document if term isn't in the current one
-                continue; 
+                continue;
             }
 
             let tfidf_value = tf_value * idf_value;
 
             match results.get_mut(path) {
-                Some(v) => { *v += tfidf_value; }
-                None => { results.insert(path.to_path_buf(), tfidf_value); }
+                Some(v) => {
+                    *v += tfidf_value;
+                }
+                None => {
+                    results.insert(path.to_path_buf(), tfidf_value);
+                }
             }
         }
 
@@ -234,8 +256,12 @@ impl Model {
 fn combine_results(results: &mut QueryResult, result: QueryResult) {
     for (doc, tfidf) in result {
         match results.get_mut(&doc) {
-            Some(curr_tfidf) =>  { *curr_tfidf += tfidf; }
-            None => { results.insert(doc.clone(), tfidf); }
+            Some(curr_tfidf) => {
+                *curr_tfidf += tfidf;
+            }
+            None => {
+                results.insert(doc.clone(), tfidf);
+            }
         }
     }
 }
@@ -253,8 +279,12 @@ fn dispatch_tasks(threads_count: usize, tasks: usize) -> Vec<(usize, usize)> {
     let mut dispatched = Vec::new();
 
     for i in 0..threads_count {
-        let start = i.min(overcharged_threads) * (threads_min_charge + 1) + 
-                    if i > overcharged_threads { i - overcharged_threads } else { 0 } * threads_min_charge;
+        let start = i.min(overcharged_threads) * (threads_min_charge + 1)
+            + if i > overcharged_threads {
+                i - overcharged_threads
+            } else {
+                0
+            } * threads_min_charge;
 
         let thread_charge = if i < overcharged_threads {
             threads_min_charge + 1
@@ -268,7 +298,11 @@ fn dispatch_tasks(threads_count: usize, tasks: usize) -> Vec<(usize, usize)> {
     dispatched
 }
 
-pub fn process_query(model: Arc<Model>, request: &str, threads_count: usize) -> HashMap<PathBuf, f32> {
+pub fn process_query(
+    model: Arc<Model>,
+    request: &str,
+    threads_count: usize,
+) -> HashMap<PathBuf, f32> {
     let request = request.split_whitespace().collect::<Vec<_>>();
 
     let mut results = QueryResult::new();
@@ -277,7 +311,12 @@ pub fn process_query(model: Arc<Model>, request: &str, threads_count: usize) -> 
 
     for (start, thread_charge) in dispatched {
         let model_ref = model.clone();
-        let terms = request[start..].iter().take(thread_charge).map(|&s| String::from(s)).collect::<Vec<_>>();
+        let terms = request[start..]
+            .iter()
+            .take(thread_charge)
+            .map(|&s| String::from(s))
+            .collect::<Vec<_>>();
+
         result_threads.push(thread::spawn(move || {
             let mut results = QueryResult::new();
             for term in terms {
